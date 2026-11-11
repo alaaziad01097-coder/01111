@@ -83,6 +83,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     treasury: {
       cashboxes: () => invoke('treasury:cashboxes'),
       createCashbox: (input) => invoke('treasury:createCashbox', input),
+      listTransactions: (args) => invoke('treasury:listTransactions', args),
+      createCashTransaction: (input) => invoke('treasury:createCashTransaction', input),
       audit: () => invoke('treasury:audit'),
       statement: (args) => invoke('treasury:statement', args),
       transfers: () => invoke('transfers:list'),

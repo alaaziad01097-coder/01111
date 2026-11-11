@@ -32,6 +32,8 @@ function farmChannels() {
 
     ['treasury:cashboxes', 'treasury.view', (db) => treasury.listCashboxes(db)],
     ['treasury:createCashbox', 'treasury.add', (db, uid, input) => treasury.createCashbox(db, uid, input)],
+    ['treasury:listTransactions', 'treasury.view', (db, _uid, args) => treasury.listCashTransactions(db, args)],
+    ['treasury:createCashTransaction', 'treasury.add', (db, uid, input) => treasury.createCashTransaction(db, uid, input)],
     ['treasury:statement', 'treasury.view', (db, _uid, args) => treasury.cashStatement(db, args)],
     ['transfers:list', 'transfers.view', (db) => treasury.listTransfers(db)],
     ['transfers:create', 'transfers.add', (db, uid, input) => treasury.createTransfer(db, uid, input)],

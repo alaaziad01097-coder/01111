@@ -122,6 +122,69 @@ function cashStatement(db, { cashboxId, dateFrom = null, dateTo = null }) {
   return { cashbox: box, opening: box.opening_balance + before, rows: statement, closing: running };
 }
 
+const MANUAL_CASH_TYPES = ['receipt', 'payment', 'deposit', 'withdrawal', 'opening'];
+const MANUAL_CASH_IN_TYPES = ['receipt', 'deposit', 'opening'];
+
+function listCashTransactions(db, { limit = 100, type = null, dateFrom = null, dateTo = null } = {}) {
+  const conditions = ['1 = 1'];
+  const params = [];
+  if (type) {
+    if (!MANUAL_CASH_TYPES.includes(type)) throw new UserFacingError('نوع الحركة غير صالح');
+    conditions.push('c.type = ?');
+    params.push(type);
+  }
+  if (dateFrom) { conditions.push('c.date >= ?'); params.push(assertIsoDate(dateFrom)); }
+  if (dateTo) { conditions.push('c.date <= ?'); params.push(assertIsoDate(dateTo)); }
+  const max = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  return db.prepare(`
+    SELECT c.id, c.doc_number, c.date, c.type, c.cashbox_id, c.amount, c.party_id,
+      p.name AS party_name, NULL AS activity_id, c.payment_method, c.description
+    FROM cash_transactions c LEFT JOIN parties p ON p.id = c.party_id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY c.date DESC, c.created_at DESC, c.rowid DESC
+    LIMIT ?
+  `).all(...params, max);
+}
+
+function createCashTransaction(db, userId, input) {
+  const type = input?.type;
+  if (!MANUAL_CASH_TYPES.includes(type)) throw new UserFacingError('نوع الحركة غير صالح');
+  const date = assertIsoDate(input?.date);
+  const amount = toPiastres(input?.amount, 'المبلغ');
+  const box = requireActiveCashbox(db, input?.cashboxId);
+  const partyId = input?.partyId ? String(input.partyId) : null;
+  const description = optionalText(input?.description, 300);
+  const isIn = MANUAL_CASH_IN_TYPES.includes(type);
+  const docType = type === 'payment' ? 'payment' : 'receipt';
+
+  return db.transaction(() => {
+    if (partyId && !db.prepare('SELECT id FROM parties WHERE id = ?').get(partyId)) {
+      throw new UserFacingError('الطرف غير موجود');
+    }
+    if (!isIn && cashboxBalance(db, box.id) < amount) throw new UserFacingError('الرصيد غير كافٍ في الخزينة');
+    const id = crypto.randomUUID();
+    const docNumber = nextDocNumber(db, docType);
+    const lines = isIn
+      ? [{ accountId: box.account_id, debit: amount, description }, { accountId: 'acc_ar', credit: amount, description }]
+      : [{ accountId: 'acc_admin', debit: amount, description }, { accountId: box.account_id, credit: amount, description }];
+    const journalEntryId = postJournalEntry(db, {
+      date,
+      description: description ?? `سند ${isIn ? 'قبض' : 'صرف'} ${docNumber}`,
+      referenceType: 'cash',
+      referenceId: id,
+      userId,
+      lines,
+    }).id;
+    db.prepare(`
+      INSERT INTO cash_transactions (id, doc_number, date, type, direction, cashbox_id, amount, party_id, payment_method,
+        source_type, source_id, description, journal_entry_id, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cash', 'manual', ?, ?, ?, ?)
+    `).run(id, docNumber, date, type, isIn ? 'in' : 'out', box.id, amount, partyId, id, description, journalEntryId, userId);
+    audit(db, { userId, action: 'create', module: 'treasury', entityId: id, entityType: 'cash_transaction', details: { docNumber, type, amount } });
+    return { id, docNumber };
+  })();
+}
+
 function listTransfers(db) {
   return db.prepare(`
     SELECT t.id, t.doc_number, t.ref_number, t.date, t.direction, t.amount, t.method, t.status, t.description,
@@ -263,6 +326,8 @@ module.exports = {
   listCashboxes,
   createCashbox,
   cashStatement,
+  listCashTransactions,
+  createCashTransaction,
   listTransfers,
   createTransfer,
   updateTransferStatus,
